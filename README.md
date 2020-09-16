@@ -18,4 +18,4 @@ fitted_model.plot_seasonal_structures()<br><br>
 
 Package dependencies are found in the requirements.txt.
 
-A detailed paper describing the method and mathematics is included in the repository.
+<b>A detailed paper describing the method and mathematics is included in the repository.</b>
