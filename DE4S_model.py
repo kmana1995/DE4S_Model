@@ -100,7 +100,7 @@ class SeasonalSwitchingModelResults:
                 initial_prob = future_state_probs
 
         else:
-            seasonal_values = [1]*len(predictions)
+            seasonal_values = [1]*n_steps
 
         # generate final predictions by multiplying level+trend*seasonality
         predictions = np.multiply(predictions, seasonal_values).tolist()
