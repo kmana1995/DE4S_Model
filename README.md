@@ -11,7 +11,7 @@ relative likelihood.<br>
  Each arrow represents the probability of transitioning between
  seasonalities<br>
 
-###Competitive Accuracy<br>
+### Competitive Accuracy<br>
 The model has been shown to forecast with competitive accuracy 
 when compared to other widely used forecasting methods. See a comparison
 of DE4S and the widely used Facebook Prophet model:<br>
