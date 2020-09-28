@@ -1,4 +1,5 @@
-# DE4S_Model
+# DE4S_Model <br>
+### A Novel Approach to Time-series Forecasting
 DE4S is a novel time-series forecasting model capable of forecasting
 time-variant seasonal structures. DE4S addresses common challenges in
 forecasting time-variant seasonal structure by leveraging
