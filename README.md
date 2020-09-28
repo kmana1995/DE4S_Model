@@ -4,7 +4,7 @@ time-variant seasonal structures. DE4S addresses common challenges in
 forecasting time-variant seasonal structure by leveraging
 HMM's to identify and "memorize" seasonal patterns and their 
 relative likelihood.<br> <br>
- ![alt text](https://github.com/kmana1995/DE4S_Model/blob/master/images/Memorized_Structres.jpg?raw=true)<br>
+ ![alt text](https://github.com/kmana1995/DE4S_Model/blob/master/Images/Memorized_Structres.jpg?raw=true)<br>
 The model has been shown to forecast with competitive accuracy 
 when compared to other widely used forecasting methods. See a comparison
 of DE4S and the widely used Facebook Prophet model:
