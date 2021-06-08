@@ -22,8 +22,12 @@ class SeasonalSwitchingModelResults:
     def plot_seasonal_structures(self):
 
         import matplotlib.pyplot as plt
+        plt.style.use('ggplot')
+        fig, axs = plt.subplots(self.seasonal_info['profile_count'])
         seasonality_features = self.seasonal_info['seasonal_feature_sets']
-
+        i = 1
+        day_keys = {0:'Monday', 1:'Tuesday', 2:'Wednesday', 3:'Thursday', 4:'Friday', 5:'Saturday',\
+                    6:'Sunday'}
         for state in seasonality_features:
             cycle_points = []
             seasonal_effects = []
@@ -39,13 +43,14 @@ class SeasonalSwitchingModelResults:
                 seasonal_effects.append(point)
                 upper_bounds.append(upper_bound)
                 lower_bounds.append(lower_bound)
-
-            plt.plot(cycle_points, seasonal_effects, color='blue')
-            plt.plot(cycle_points, upper_bounds, color='powderblue')
-            plt.plot(cycle_points, lower_bounds, color='powderblue')
-            plt.fill_between(cycle_points, lower_bounds, upper_bounds, color='powderblue')
-            plt.title('SEASONAL EFFECTS {}'.format(state))
-            plt.show()
+            weekdays = [day_keys[day] for day in cycle_points]
+            axs[i-1].plot(weekdays, seasonal_effects, color='blue')
+            axs[i-1].plot(weekdays, upper_bounds, color='powderblue')
+            axs[i-1].plot(weekdays, lower_bounds, color='powderblue')
+            axs[i-1].fill_between(weekdays, lower_bounds, upper_bounds, color='powderblue')
+            axs[i-1].set_title('Seasonal Effects of State {}'.format(i))
+            i += 1
+        plt.show()
 
     def predict(self, n_steps):
         """
@@ -186,8 +191,9 @@ class SeasonalSwitchingModel:
                                    'profile_transition_matrix': seasonality_transition_matrix,
                                    'profile_observation_probabilities': observation_probabilities,
                                    'seasonal_fitted_values': fitted_seasonal_values}
-        except:
+        except Exception as e:
             print('Failure fitting seasonal components, reverting to double exponential smoothing')
+            print('Error was {}'.format(e))
             fitted_seasonal_values = [1]*len(decomposition_df)
             seasonal_components ={'level': None}
 
@@ -278,7 +284,7 @@ class SeasonalSwitchingModel:
             # predict time step
             projection = level+trend
             # update level
-            level_new = (1-self.level_smoothing)*(training_data[ind])+self.level_smoothing*(level+trend)
+            level_new = (1-self.level_smoothing)*(level+trend)+self.level_smoothing*(training_data[ind])
             # update trend
             trend_new = (1-self.trend_smoothing)*trend+self.trend_smoothing*(level_new-level)
             # append to projected
@@ -377,12 +383,9 @@ class SeasonalSwitchingModel:
         # create containers for pertinent information
         cluster_number = []
         distortions = []
-        distortion_dif_one = []
-        distortion_dif_two = []
-        strengths = []
-        delta_one = None
-        delta_two = None
-        iter_strength = 0
+        rocs = []
+        cluster_rocs = []
+        rate_of_change = 0
 
         # iterate through the number of clusters
         n_clusters = 0
@@ -424,21 +427,23 @@ class SeasonalSwitchingModel:
                 np.min(cdist(data, centers, 'euclidean'), axis=1) / data.shape[0]) / n_clusters
 
             # depending on which cluster we're fitting, we may only have partial strength information, so we need these checks
-            if n_clusters > 2:
-                delta_two = delta_one - (distortion_new - distortion)
-                delta_one = distortion_new - distortion
-                iter_strength = (delta_one - delta_two) / n_clusters
-            if n_clusters == 2:
-                delta_one = distortion_new - distortion
+            if n_clusters >= 2:
+                rate_of_change = distortion_new - distortion
+                clust_rate_of_change = n_clusters / (n_clusters-1)
+                distortion = distortion_new
             if n_clusters == 1:
                 distortion = distortion_new
+                clust_rate_of_change = 0
 
             # append to the containers
             cluster_number.append(n_clusters)
             distortions.append(distortion)
-            distortion_dif_one.append(delta_one)
-            distortion_dif_two.append(delta_two)
-            strengths.append(iter_strength)
+            rocs.append(rate_of_change)
+            cluster_rocs.append(clust_rate_of_change)
+
+        # calculate the strength of information gain
+        strengths = np.divide(rocs, cluster_rocs)
+        strengths = np.nan_to_num(strengths, 0)
 
         # keep either then optimal cluster based on strength, or max_clusters
         if min(strengths) < 0:
@@ -802,3 +807,7 @@ if __name__ == '__main__':
     fitted_switching_model = forecaster.fit_seasonal_switching_model()
     predictions = fitted_switching_model.predict(10)
     fitted_switching_model.plot_seasonal_structures()
+    import matplotlib.pyplot as plt
+    plt.plot(fitted_switching_model.actuals)
+    plt.plot(fitted_switching_model.fitted_values)
+    plt.show()
