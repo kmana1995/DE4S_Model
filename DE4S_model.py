@@ -8,26 +8,29 @@ from scipy.spatial.distance import cdist
 class SeasonalSwitchingModelResults:
 
     def __init__(self, df, endog, date_header, trend, level, seasonal_info,
-                 fitted_values, actuals, residuals):
+                 impacts, fitted_values, actuals, residuals):
         self.df = df
         self.endog = endog
         self.date_header = date_header
         self.trend = trend
         self.level = level
         self.seasonal_info = seasonal_info
+        self.impacts = impacts
         self.fitted_values = fitted_values
         self.actuals = actuals
         self.residuals = residuals
 
     def plot_seasonal_structures(self):
-
+        """
+        Function for plotting the seasonal components.
+        """
         import matplotlib.pyplot as plt
         plt.style.use('ggplot')
         fig, axs = plt.subplots(self.seasonal_info['profile_count'])
         seasonality_features = self.seasonal_info['seasonal_feature_sets']
         i = 1
-        day_keys = {0:'Monday', 1:'Tuesday', 2:'Wednesday', 3:'Thursday', 4:'Friday', 5:'Saturday',\
-                    6:'Sunday'}
+        day_keys = {0: 'Monday', 1: 'Tuesday', 2: 'Wednesday', 3: 'Thursday', 4: 'Friday', 5: 'Saturday',
+                    6: 'Sunday'}
         for state in seasonality_features:
             cycle_points = []
             seasonal_effects = []
@@ -52,13 +55,14 @@ class SeasonalSwitchingModelResults:
             i += 1
         plt.show()
 
-    def predict(self, n_steps):
+    def predict(self, n_steps, exog=None):
         """
         Predict function for fitted seasonal switching model
 
-        :param n_steps: int, horizon to forecast over
-
-        :return predictions: list, predicted values
+        Args:
+            - n_steps: int, horizon to forecast over
+        Returns:
+            - predictions: list, predicted values
         """
         # set up the prediction data frame
         pred_df = self.create_predict_df(n_steps)
@@ -110,14 +114,19 @@ class SeasonalSwitchingModelResults:
         # generate final predictions by multiplying level+trend*seasonality
         predictions = np.multiply(predictions, seasonal_values).tolist()
 
+        if self.impacts is not None and exog is not None:
+            predictions += np.dot(exog, self.impacts)
+
         return predictions
 
     def create_predict_df(self, n_steps):
         """
         Set up DF to run prediction on
 
-        :param n_steps: int, horizon to forecast over
-        :return pred_df: df, prediction horizon
+        Args:
+            - n_steps: int, horizon to forecast over
+        Returns:
+            - pred_df: df, prediction horizon
         """
         decomposition_df = self.df[[self.endog, self.date_header]]
         max_date = max(decomposition_df[self.date_header])
@@ -132,8 +141,20 @@ class SeasonalSwitchingModelResults:
 
 class SeasonalSwitchingModel:
 
-    def __init__(self, df, endog, date_header, initial_level, level_smoothing, initial_trend, trend_smoothing,
-                 seasonality='weekly', max_profiles=10, anomaly_detection=True, exog=None):
+    def __init__(self,
+                 df,
+                 endog,
+                 date_header,
+                 initial_level,
+                 level_smoothing,
+                 initial_trend,
+                 trend_smoothing,
+                 seasonality='weekly',
+                 max_profiles=10,
+                 anomaly_detection=True,
+                 exog=None,
+                 _lambda=0.1):
+
         self.df = df
         self.endog = endog
         self.date_header = date_header
@@ -145,17 +166,20 @@ class SeasonalSwitchingModel:
         self.seasonality = seasonality
         self.anomaly_detection = anomaly_detection
         self.exog = exog
+        self._lambda = _lambda
 
-    def fit_seasonal_switching_model(self):
+    def fit(self):
         '''
         Parent function for fitting the seasonal switching model to a timeseries.
 
         The seasonal switching model is designed specifically to model timeseries with multiple seasonal
-        states which are "hidden" via a HMM, while modeling trend and level components through double exponential smoothing.
+        states which are "hidden" via a HMM, while modeling trend and level components through double exponential
+        smoothing.
 
         Users can also include exogenous regressors as to include impacts of events.
 
-        :return SeasonalSwitchingModelResults: a class housing the fitted results
+        Returns:
+            - SeasonalSwitchingModelResults: a class housing the fitted results
         '''
         # extract the timeseries specifically from the df provided
         timeseries = self.df[self.endog].tolist()
@@ -167,16 +191,12 @@ class SeasonalSwitchingModel:
             timeseries_df = self.df[[self.endog, self.date_header]].copy()
         # decompose trend and level components using double exponential smoothing
         decomposition_df, trend, level = self.fit_trend_and_level(timeseries_df)
-        # Store the level and trend decomposition information
-        level_trend_decomposition={'decomposition_df': decomposition_df,
-                                   'trend': trend,
-                                   'level': level}
 
         try:
             # estimate the seasonal profiles to the partially decomposed timeseries via an cluster analysis
             seasonal_profiles = self.estimate_seasonal_profiles(decomposition_df)
 
-            # extract the observed seasonality (decomposed timeseries) and the cycle, indicating a point in the seasonal cycle
+            # extract the observed seasonality (decomposed timeseries) and the cycle (a point in the seasonal cycle)
             seasonal_observations = decomposition_df['OBSERVED_SEASONALITY'].tolist()
             cycle_states = decomposition_df['CYCLE'].tolist()
 
@@ -201,11 +221,34 @@ class SeasonalSwitchingModel:
         fitted_values = np.multiply(decomposition_df['LEVEL_TREND_DECOMPOSITION'], fitted_seasonal_values).tolist()
         residuals = np.subtract(timeseries, fitted_values).tolist()
 
+        if self.exog is not None:
+            impacts = self.fit_event_impacts(residuals)
+            fitted_values += np.dot(self.exog, impacts)
+            residuals = np.subtract(timeseries, fitted_values).tolist()
+        else:
+            impacts = None
+
         # store and return class
         results = SeasonalSwitchingModelResults(self.df, self.endog, self.date_header, trend,
-                                             level, seasonal_components, fitted_values, timeseries, residuals)
+                                                level, seasonal_components, impacts,
+                                                fitted_values, timeseries, residuals)
 
         return results
+
+    def fit_event_impacts(self, endog):
+        """
+        Fit event impacts using ridge regression.
+
+        Args:
+            - endog: series, dependent variable
+            - _lambda: float, shrinkage parameter (increasing = increased sparsity)
+        Returns:
+            - coefficients: array, coefficient set
+        """
+        exog = self.exog.copy()
+        coefficients = np.dot(np.dot(np.linalg.inv(np.dot(exog, exog.T)+self._lambda*np.identity(exog.shape[0])),
+                              exog).T, endog)
+        return coefficients
 
     def anomaly_filter(self, df):
         """
@@ -214,8 +257,10 @@ class SeasonalSwitchingModel:
         Using forward and backward channels will expose if outliers result in structural
         changes moving forward, and vice-versa.
 
-        :param df:
-        :return cleaned_timeseries:
+        Args:
+            - df: dataframe, containing data for fit
+        Returns:
+            - cleaned_timeseries: dataframe, with anomolies removed
         """
         # calculate forward means
         df['30_PERIOD_FWD_MEAN'] = df[self.endog].rolling(30, min_periods=0).mean().tolist()
@@ -258,7 +303,12 @@ class SeasonalSwitchingModel:
         """
         Fit the trend and level to the timeseries using double exponential smoothing
 
-        :return:
+        Args:
+            - df: dataframe, containing data for fit
+        Returns:
+            - decomposition_df: dataframe, containing level and trend decomposition fit
+            - trend: folat, current trend
+            - level: float, current level
         """
         # extract the timeseries and begin forming the decomposition data frame
         decomposition_df = df.copy()
@@ -266,7 +316,8 @@ class SeasonalSwitchingModel:
         # establish the "grain" (which cycle we're in) and the "cycle" (which point in the seasonal cycle)
         if self.seasonality == 'weekly':
             decomposition_df['GRAIN'] = decomposition_df.index//7
-            decomposition_df['ROLLING_GRAIN_MEAN'] = decomposition_df[self.endog].rolling(7, min_periods=0).mean().tolist()
+            decomposition_df['ROLLING_GRAIN_MEAN'] = decomposition_df[self.endog].rolling(
+                7, min_periods=0).mean().tolist()
             decomposition_df['CYCLE'] = decomposition_df[self.date_header].dt.weekday
         else:
             print("Seasonal profile not set to 'weekly', unable to fit seasona profiling")
@@ -284,7 +335,7 @@ class SeasonalSwitchingModel:
             # predict time step
             projection = level+trend
             # update level
-            level_new = (1-self.level_smoothing)*(level+trend)+self.level_smoothing*(training_data[ind])
+            level_new = (1 - self.level_smoothing) * (training_data[ind]) + self.level_smoothing * (level + trend)
             # update trend
             trend_new = (1-self.trend_smoothing)*trend+self.trend_smoothing*(level_new-level)
             # append to projected
@@ -298,7 +349,8 @@ class SeasonalSwitchingModel:
         decomposition_df['LEVEL_TREND_DECOMPOSITION'] = projected
 
         # get the observed seasonality using the filtered values
-        decomposition_df['OBSERVED_SEASONALITY'] = decomposition_df[self.endog]/decomposition_df['LEVEL_TREND_DECOMPOSITION']
+        decomposition_df['OBSERVED_SEASONALITY'] = (decomposition_df[self.endog]/
+                                                    decomposition_df['LEVEL_TREND_DECOMPOSITION'])
 
         return decomposition_df, trend, level
 
@@ -307,8 +359,10 @@ class SeasonalSwitchingModel:
         This function estimates the seasonal profiles within our timeseries. This serves as the initial
         estimates to the state-space parameters fed to the HMM.
 
-        :param decomposition_df: a decomposed timeseries into level, trend, seasonality
-        :return seasonal_profiles: dict, a dictionary containing the seasonal profiles and their state space params
+        Args:
+            - decomposition_df: a decomposed timeseries into level, trend, seasonality
+        Returns:
+            - seasonal_profiles: dict, a dictionary containing the seasonal profiles and their state space params
         """
         # extract needed vars to create a cluster df
         clustering_df = decomposition_df[['GRAIN', 'CYCLE', 'OBSERVED_SEASONALITY']]
@@ -317,8 +371,9 @@ class SeasonalSwitchingModel:
         clustering_df = clustering_df.groupby(['GRAIN', 'CYCLE'], as_index=False)['OBSERVED_SEASONALITY'].agg('mean')
 
         # Normalize the seasonal affects, reducing the impact of relatively large or small values on the search space
-        clustering_df['NORMALIZED_SEASONALITY'] = (clustering_df['OBSERVED_SEASONALITY']-\
-                                                  clustering_df['OBSERVED_SEASONALITY'].mean())/clustering_df['OBSERVED_SEASONALITY'].std()
+        clustering_df['NORMALIZED_SEASONALITY'] = (clustering_df['OBSERVED_SEASONALITY']-
+                                                   clustering_df['OBSERVED_SEASONALITY'].mean()
+                                                   )/clustering_df['OBSERVED_SEASONALITY'].std()
 
         # Remove any outliers from the cluster fit df. Given we are attempting to extract common seasonality, outliers
         # simply inhibit the model
@@ -352,7 +407,8 @@ class SeasonalSwitchingModel:
             profile_df = decomposition_df[decomposition_df['CLUSTER'] == profile]
             weekly_profile_mu = profile_df.groupby('CYCLE', as_index=False)['OBSERVED_SEASONALITY'].agg('mean')
             weekly_profile_mu.rename(columns={'OBSERVED_SEASONALITY': 'SEASONALITY_MU'}, inplace=True)
-            weekly_profile_sigma = profile_df.groupby('CYCLE', as_index=True)['OBSERVED_SEASONALITY'].agg('std').reset_index()
+            weekly_profile_sigma = profile_df.groupby('CYCLE', as_index=True
+                                                      )['OBSERVED_SEASONALITY'].agg('std').reset_index()
             weekly_profile_sigma.rename(columns={'OBSERVED_SEASONALITY': 'SEASONALITY_SIGMA'}, inplace=True)
 
             seasonal_profile = weekly_profile_mu.merge(weekly_profile_sigma, how='inner', on='CYCLE')
@@ -369,9 +425,10 @@ class SeasonalSwitchingModel:
 
         It will then return a kmeans model fitted to the training data.
 
-        :param data: df, training data
-
-        :return clusterer: fitted KMeans model
+        Args:
+            - data: df, training data
+        Returns:
+            - clusterer: fitted KMeans model
         """
         # perform an initial check to ensure we have more obs than possible clusters
         n_rows = len(data)
@@ -412,7 +469,8 @@ class SeasonalSwitchingModel:
                     data = data[[member != ind for member in assignment_list]]
                     assignment_list = (filter((ind).__ne__, assignment_list))
                     _pass = True
-            # if _pass has been switched to true, we must re-iterate with the same cluster number, albeit with discarded observations
+            # if _pass has been switched to true, we must re-iterate with the same cluster number,
+            # albeit with discarded observations
             if _pass:
                 n_clusters -= 1
                 continue
@@ -426,7 +484,7 @@ class SeasonalSwitchingModel:
             distortion_new = np.sum(
                 np.min(cdist(data, centers, 'euclidean'), axis=1) / data.shape[0]) / n_clusters
 
-            # depending on which cluster we're fitting, we may only have partial strength information, so we need these checks
+            # store information to ID optimal cluster
             if n_clusters >= 2:
                 rate_of_change = distortion_new - distortion
                 clust_rate_of_change = n_clusters / (n_clusters-1)
@@ -453,7 +511,7 @@ class SeasonalSwitchingModel:
 
         # fit a final model on the optimal_cluster and set it as the number of profiles
         clusterer = KMeans(n_clusters=optimal_clusters)
-        cluster_assignments = clusterer.fit(data)
+        clusterer.fit(data)
         self.n_profiles = optimal_clusters
 
         return clusterer
@@ -465,16 +523,22 @@ class SeasonalSwitchingModel:
         given the timeseries, hidden states, and transition matrix... all calibrated within
         the baum-welch algorithm.
 
-        :param seasonal_profiles: dict, containing seasons and their parameter sets
-        :param timeseries_observations: list/array, containing the timeseries
-        :param cycle_states: list/array, containing the point in a seasonal cycle of an observation
-        :return:
+        Args:
+            - seasonal_profiles: dict, containing seasons and their parameter sets
+            - timeseries_observations: list/array, containing the timeseries
+            - cycle_states: list/array, containing the point in a seasonal cycle of an observation
+        Returns:
+            - fitted_seasonal_values: array, n_obsx1 array of fitted seasonal values
+            - seasonality_transition_matrix: array, n_seasons x n_seasons array of transition likelihoods
+            - seasonality_features: dict, seasonal features (parameters)
+            - observation_probabilities: array, n_obs x n_seasons array of probabilities
         """
         # Run baum-welch to fit HMM using expectation-maximization
-        seasonality_transition_matrix, seasonality_features, observation_probabilities = self.run_baum_welch_algorithm(seasonal_profiles,
-                                                                                        timeseries_observations, cycle_states)
+        seasonality_transition_matrix, seasonality_features, observation_probabilities = \
+            self.run_baum_welch_algorithm(seasonal_profiles, timeseries_observations, cycle_states)
         # Run viterbi to get the MAP forward pass
-        state_list, forward_probabilities = self.run_viterbi_algorithm(seasonality_features, seasonality_transition_matrix,
+        state_list, forward_probabilities = self.run_viterbi_algorithm(seasonality_features,
+                                                                       seasonality_transition_matrix,
                                                                        timeseries_observations, cycle_states)
         # Fitted values from the HMM
         fitted_seasonal_values = self.fit_values(forward_probabilities, cycle_states, seasonality_transition_matrix,
@@ -487,12 +551,13 @@ class SeasonalSwitchingModel:
         """
         This function predicts the value given the state features and observation probabilities.
 
-        :param observation_probabilities: list/array, the observation-state probabilities
-        :param cycle_states: list/array, containing the point in a seasonal cycle of an observation
-        :param transition_matrix: array, transition probabilities from state to state
-        :param state_features: dict, containing seasons and their parameter sets
-
-        :return fitted_values:
+        Args:
+            - observation_probabilities: list/array, the observation-state probabilities
+            - cycle_states: list/array, containing the point in a seasonal cycle of an observation
+            - transition_matrix: array, transition probabilities from state to state
+            - state_features: dict, containing seasons and their parameter sets
+        Returns:
+            - fitted_values:
         """
         fitted_values = [0]
 
@@ -523,25 +588,27 @@ class SeasonalSwitchingModel:
         This function runs the viterbi algorithm. It considers the most likely forward pass
         of observations running through hidden states with defined features.
 
-        :param state_features: dict, containing seasons and their parameter sets
-        :param transition_matrix: array, transition probabilities from state to state
-        :param timeseries_observations: list/array, containing the timeseries
-        :param cycle_states: list/array, containing the point in a seasonal cycle of an observation
-
-        :return state_list:
-        :return forward_probabilities:
+        Args:
+            - state_features: dict, containing seasons and their parameter sets
+            - transition_matrix: array, transition probabilities from state to state
+            - timeseries_observations: list/array, containing the timeseries
+            - cycle_states: list/array, containing the point in a seasonal cycle of an observation
+        Returns:
+            - state_list:
+            - forward_probabilities:
         """
 
         # initialized variables
-        observation_probabilities = self.create_observation_probabilities(state_features, timeseries_observations, cycle_states)
+        observation_probabilities = self.create_observation_probabilities(state_features, timeseries_observations,
+                                                                          cycle_states)
 
         alpha = observation_probabilities[0]
         forward_probabilities = [alpha / sum(alpha)]
         forward_trellis = [np.array([alpha] * self.n_profiles) / np.sum(np.array([alpha] * self.n_profiles))]
 
-        # Given the probability of the initial observation in the initial state, get the probabiltiy of a transition p(t|p(o|s))
+        # get the probability of a transition p(t|p(o|s))
         for i in range(1, len(observation_probabilities)):
-            # the probabibility of obervation k coming from states i:j
+            # the probability of observation k coming from states i:j
             observation_probability = observation_probabilities[i]
 
             # the probability of moving from state 1ij to state 2ij (given the starting probability alpha)
@@ -576,13 +643,14 @@ class SeasonalSwitchingModel:
         Run a forward backward algorithm on a suspected HMM (Hidden Markov Model). This
         is the step where the parameters for a HMM are fit to the data
 
-        :param state_features: dict, containing seasons and their parameter sets
-        :param timeseries_observations:  list/array, containing the timeseries
-        :param cycle_states: list/array, containing the point in a seasonal cycle of an observation
-
-        :return transition_matrix:
-        :return state_features:
-        :return observation_probabilities:
+        Args:
+            - state_features: dict, containing seasons and their parameter sets
+            - timeseries_observations:  list/array, containing the timeseries
+            - cycle_states: list/array, containing the point in a seasonal cycle of an observation
+        Returns:
+            - transition_matrix:
+            - state_features:
+            - observation_probabilities:
         """
 
         # create the initial transition matrix
@@ -593,7 +661,8 @@ class SeasonalSwitchingModel:
 
         for i in range(10):
             # create the observation probabilities given the initial features
-            observation_probabilities = self.create_observation_probabilities(state_features, timeseries_observations, cycle_states)
+            observation_probabilities = self.create_observation_probabilities(state_features, timeseries_observations,
+                                                                              cycle_states)
 
             # run forward and backward pass through
             forward_probabilities, forward_trellis = self.run_forward_pass(transition_matrix, observation_probabilities)
@@ -634,7 +703,8 @@ class SeasonalSwitchingModel:
                     state_weight[cycle] += _lambda[ind][state_ind]
                     state_sum[cycle] += timeseries_observations[ind] * _lambda[ind][state_ind]
                     state_var[cycle] += _lambda[ind][state_ind] * np.sqrt(
-                        (timeseries_observations[ind] - param_set.loc[param_set['CYCLE']==cycle, 'SEASONALITY_MU'].item()) ** 2)
+                        (timeseries_observations[ind] - param_set.loc[param_set['CYCLE'] == cycle,
+                                                                      'SEASONALITY_MU'].item()) ** 2)
 
                 state_mu_set = np.divide(state_sum, state_weight).tolist()
                 state_sigma_set = np.divide(state_var, state_weight).tolist()
@@ -671,7 +741,8 @@ class SeasonalSwitchingModel:
         transition probabilities will be adapted as we perform forward and
         backward passes in the broader fwd-bkwd algorithm.
 
-        :return transition_matrix:
+        Returns:
+            - transition_matrix: array, initial transition matrix for HMM
         """
 
         # For each state, create a transition probability for state_i --> state_j
@@ -692,11 +763,12 @@ class SeasonalSwitchingModel:
         """
         The forward pass of a forward backward algorithm. Calculating the forward probabilities
 
-        :param transition_matrix: array, probability of transitioning from state i to state j
-        :param observation_probabilities: array, probability of observation i coming from state j
-
-        :return forward_results: array, calculated forward probabilities
-        :return forward_trellis: trellis of stored results from forward pass
+        Args:
+            - transition_matrix: array, probability of transitioning from state i to state j
+            - observation_probabilities: array, probability of observation i coming from state j
+        Returns:
+            - forward_results: array, calculated forward probabilities
+            - forward_trellis: trellis of stored results from forward pass
         """
 
         # initialize the variables
@@ -704,7 +776,7 @@ class SeasonalSwitchingModel:
         forward_results = [alpha]
         forward_trellis = [np.array([alpha] * self.n_profiles) / np.sum(np.array([alpha] * self.n_profiles))]
 
-        # Given the probability of the initial observation in the initial state, get the probability of a transition p(t|p(o|s))
+        # get the probability of a transition p(t|p(o|s))
         for i in range(1, len(observation_probabilities)):
             # the probability of observation k coming from states i:j
             observation_probability = observation_probabilities[i]
@@ -727,18 +799,19 @@ class SeasonalSwitchingModel:
         """
         The backward pass of a forward backward algorithm. Calculating the backward probabilities
 
-        :param transition_matrix: array, probability of transitioning from state i to state j
-        :param observation_probabilities: array, probability of observation i coming from state j
-
-        :return backward_results: array, calculated backward probabilities
-        :return backward_trellis: trellis of stored results from backward pass
+        Args:
+            - transition_matrix: array, probability of transitioning from state i to state j
+            - observation_probabilities: array, probability of observation i coming from state j
+        Returns:
+            - backward_results: array, calculated backward probabilities
+            - backward_trellis: trellis of stored results from backward pass
         """
         # initialize variables
         beta = [1] * self.n_profiles
         backward_results = [beta]
         backward_trellis = [np.array([beta] * self.n_profiles)]
 
-        # Given the probability of the initial observation in the initial state, get the probability of a transition p(t|p(o|s))
+        # get the probability of a transition p(t|p(o|s))
         for i in range(2, len(observation_probabilities) + 1):
             # the probability of observation k coming from states i:j
             observation_probability = observation_probabilities[-i]
@@ -761,11 +834,12 @@ class SeasonalSwitchingModel:
         """
         Create the observation probabilities given the parameter set of each state
 
-        :param state_features: dict, containing seasons and their parameter sets
-        :param timeseries_observations:  list/array, containing the timeseries
-        :param cycle_states: list/array, containing the point in a seasonal cycle of an observation
-
-        :return observation_state_probabilities: array, the state space probabilities
+        Args:
+            - state_features: dict, containing seasons and their parameter sets
+            - timeseries_observations:  list/array, containing the timeseries
+            - cycle_states: list/array, containing the point in a seasonal cycle of an observation
+        Returns:
+             - observation_state_probabilities: array, the state space probabilities
         """
 
         observation_state_container = []
@@ -791,23 +865,23 @@ class SeasonalSwitchingModel:
 
 if __name__ == '__main__':
     # Running main will run a single fit and predict step on a subset of the "testing_data.csv" data set
-    #
-    data = pd.read_csv('testing_data.csv', parse_dates=['date'])
+    data = pd.read_csv('nfl_timeseries_test_data.csv', parse_dates=['DATE'])
+    exog = pd.get_dummies(data['DATE'].dt.weekday, prefix='weekday')
+    exog_2 = pd.get_dummies(data['DATE'].dt.month, prefix='month')
+    exog = exog.merge(exog_2, left_index=True, right_index=True)
     data.columns = data.columns.str.upper().str.strip()
     data.sort_values('DATE', inplace=True)
+    fit_df = data
+    initial_level = fit_df['QUERIES'][:7].mean()
+    forecaster = SeasonalSwitchingModel(fit_df, 'QUERIES', 'DATE', initial_level, .2, 0, .2,
+                                        max_profiles=10, seasonality='weekly', anomaly_detection=True,
+                                        exog=exog, _lambda=25)
 
-    item = data['ITEM'].unique().tolist()[0]
-    store = data['STORE'].unique().tolist()[0]
-
-    fit_df = data[(data['STORE'] == store) & (data['ITEM'] == item)].reset_index(drop=True)
-    initial_level = fit_df['SALES'][:7].mean()
-    forecaster = SeasonalSwitchingModel(fit_df, 'SALES', 'DATE', initial_level, .2, 0, .2,
-                                        max_profiles=5, seasonality='weekly', anomaly_detection=True)
-
-    fitted_switching_model = forecaster.fit_seasonal_switching_model()
-    predictions = fitted_switching_model.predict(10)
+    fitted_switching_model = forecaster.fit()
+    predictions = fitted_switching_model.predict(10, exog=exog[-10:])
     fitted_switching_model.plot_seasonal_structures()
     import matplotlib.pyplot as plt
-    plt.plot(fitted_switching_model.actuals)
-    plt.plot(fitted_switching_model.fitted_values)
+    plt.plot(fitted_switching_model.actuals, label='actual')
+    plt.plot(fitted_switching_model.fitted_values, label='fit')
     plt.show()
+    print(np.sum(abs(fitted_switching_model.impacts)))
