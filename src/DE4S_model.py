@@ -58,7 +58,7 @@ class SeasonalSwitchingModelResults:
             i += 1
         plt.show()
 
-    def predict(self, n_steps, exog=None):
+    def predict(self, n_steps, from_date=None, exog=None):
         """
         Predict function for fitted seasonal switching model
 
@@ -68,10 +68,13 @@ class SeasonalSwitchingModelResults:
             - predictions: list, predicted values
         """
         # set up the prediction data frame
-        pred_df = self.create_predict_df(n_steps)
+        pred_df = self.create_predict_df(n_steps, from_date)
 
-        #extract the level
-        level = self.level
+        if from_date is None:
+            # extract the level
+            level = self.level
+        else:
+            level = self.level + (from_date - max(self.df[self.date_header])).days * self.trend
         trend = self.trend
         predictions = []
 
@@ -122,7 +125,7 @@ class SeasonalSwitchingModelResults:
 
         return predictions
 
-    def create_predict_df(self, n_steps):
+    def create_predict_df(self, n_steps, from_date):
         """
         Set up DF to run prediction on
 
@@ -131,9 +134,11 @@ class SeasonalSwitchingModelResults:
         Returns:
             - pred_df: df, prediction horizon
         """
-        decomposition_df = self.df[[self.endog, self.date_header]]
-        max_date = max(decomposition_df[self.date_header])
-        pred_start = max_date + pd.DateOffset(days=1)
+
+        if from_date is None:
+            pred_start = max(self.df[self.date_header]) + pd.DateOffset(days=1)
+        else:
+            pred_start = from_date
         pred_end = pred_start + pd.DateOffset(days=n_steps-1)
         pred_df = pd.DataFrame({self.date_header: pd.date_range(pred_start, pred_end)})
 
@@ -361,7 +366,7 @@ if __name__ == '__main__':
     # Running main will run a single fit and predict step on a subset of the "testing_data.csv" data set
     data = pd.read_csv('../nfl_timeseries_test_data.csv', parse_dates=['DATE'])
     exog = pd.get_dummies(data['DATE'].dt.weekday, prefix='weekday')
-    print(data.loc[data['QUERIES'] == max(data['QUERIES']), 'DATE'])
+    print(max(data['DATE']))
     exog['super_bowl'] = np.where(data['DATE'].isin([pd.to_datetime('2/8/2016')]), 1, 0)
     exog_2 = pd.get_dummies(data['DATE'].dt.month, prefix='month')
     exog = exog.merge(exog_2, left_index=True, right_index=True)
@@ -374,7 +379,7 @@ if __name__ == '__main__':
                                         exog=exog, _lambda=25)
 
     fitted_switching_model = forecaster.fit()
-    predictions = fitted_switching_model.predict(10, exog=exog[-10:])
+    predictions = fitted_switching_model.predict(10, from_date=pd.to_datetime('1/8/2017'), exog=exog[-10:])
     fitted_switching_model.plot_seasonal_structures()
     import matplotlib.pyplot as plt
     plt.plot(fit_df['DATE'], fitted_switching_model.actuals, label='actual')
