@@ -239,15 +239,9 @@ class SeasonalHiddenMarkovModel:
         """
 
         # For each state, create a transition probability for state_i --> state_j
-        # We initialize the transition probabilites as decreasing to more distant states
-        transition_list = []
-        for state in range(self.n_profiles):
-            init_probs = [1] * self.n_profiles
-            init_mult = [(1 / ((abs(x - state) + 1) * 1.5)) * init_probs[x] for x in range(len(init_probs))]
-            state_transition_prob = np.divide(init_mult, sum(init_mult))
-            transition_list.append(state_transition_prob)
-
-        transition_matrix = np.array(transition_list)
+        # We initialize the transition probabilities to be equal at start
+        transition_matrix = np.zeros(shape=(self.n_profiles, self.n_profiles))
+        transition_matrix += 1 / self.n_profiles
         print('Initial transition matrix created for {} states: '.format(self.n_profiles))
         print(transition_matrix)
         return transition_matrix
